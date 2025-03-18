@@ -16,6 +16,7 @@ import torch
 
 import env_preprocessing
 import MRQ
+import MRQ_Adaptive
 import utils
 
 
@@ -40,6 +41,12 @@ def main():
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--total_timesteps', default=-1, type=int) # Uses default, input to override.
     parser.add_argument('--device', default='cuda', type=str)
+    # Adaptive model options
+    parser.add_argument('--use_adaptive', default=False, action=argparse.BooleanOptionalAction, type=bool)
+    parser.add_argument('--num_points', default=3, type=int)
+    parser.add_argument('--position_range_min', default=-1.0, type=float)
+    parser.add_argument('--position_range_max', default=1.0, type=float)
+    parser.add_argument('--move_smoothest_freq', default=1000000, type=int)
     # Evaluation
     parser.add_argument('--eval_freq', default=-1, type=int) # Uses default, input to override.
     parser.add_argument('--eval_eps', default=10, type=int)
@@ -62,7 +69,9 @@ def main():
     if args.eval_freq == -1: args.eval_freq = default_arguments.__dict__[f'{env_type}_eval_freq']
 
     # File name and make folders
-    if args.project_name == '': args.project_name = f'MRQ+{args.env}+{args.seed}'
+    if args.project_name == '': 
+        model_name = 'MRQ-Adaptive' if args.use_adaptive else 'MRQ'
+        args.project_name = f'{model_name}+{args.env}+{args.seed}'
     if not os.path.exists(args.eval_folder): os.makedirs(args.eval_folder)
     if not os.path.exists(args.log_folder): os.makedirs(args.log_folder)
     if args.save_experiment and not os.path.exists(f'{args.save_folder}/{args.project_name}'):
@@ -77,8 +86,22 @@ def main():
         env = env_preprocessing.Env(args.env, args.seed, eval_env=False)
         eval_env = env_preprocessing.Env(args.env, args.seed+100, eval_env=True) # +100 to make sure the seed is different.
 
-        agent = MRQ.Agent(env.obs_shape, env.action_dim, env.max_action,
-            env.pixel_obs, env.discrete, device, env.history)
+        # Create adaptive model hyperparameters if using adaptive model
+        hp = {}
+        if args.use_adaptive:
+            hp = {
+                'num_points': args.num_points,
+                'position_range': (args.position_range_min, args.position_range_max),
+                'move_smoothest_freq': args.move_smoothest_freq
+            }
+            
+        # Choose between standard MRQ and adaptive MRQ
+        if args.use_adaptive:
+            agent = MRQ_Adaptive.Agent(env.obs_shape, env.action_dim, env.max_action,
+                env.pixel_obs, env.discrete, device, env.history, hp)
+        else:
+            agent = MRQ.Agent(env.obs_shape, env.action_dim, env.max_action,
+                env.pixel_obs, env.discrete, device, env.history)
 
         logger = utils.Logger(f'{args.log_folder}/{args.project_name}.txt')
 
