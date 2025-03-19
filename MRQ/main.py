@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--position_range_max', default=1.0, type=float)
     parser.add_argument('--move_smoothest_freq', default=1000000, type=int)
     # Evaluation
+    parser.add_argument('--scale_factor', default=1.0, type=float)
     parser.add_argument('--eval_freq', default=-1, type=int) # Uses default, input to override.
     parser.add_argument('--eval_eps', default=10, type=int)
     # File name and locations
@@ -86,22 +87,39 @@ def main():
         env = env_preprocessing.Env(args.env, args.seed, eval_env=False)
         eval_env = env_preprocessing.Env(args.env, args.seed+100, eval_env=True) # +100 to make sure the seed is different.
 
-        # Create adaptive model hyperparameters if using adaptive model
+        # Create hyperparameters with scaled hidden dimensions
         hp = {}
+        scale_factor = args.scale_factor
+        
+        # Base hyperparameters
+        base_hp = {
+            # Scale hidden dimensions only
+            'enc_hdim': int(512 * scale_factor),  # Scale hidden dimension
+            'value_hdim': int(512 * scale_factor),  # Scale hidden dimension
+            'policy_hdim': int(512 * scale_factor),  # Scale hidden dimension
+            'zs_dim': int(512 * scale_factor),  # Scale latent dimension
+            'zsa_dim': int(512 * scale_factor),  # Scale latent dimension
+            'za_dim': int(256 * scale_factor)  # Scale latent dimension
+        }
+        
+        # Add adaptive model hyperparameters if using adaptive model
         if args.use_adaptive:
             hp = {
+                **base_hp,  # Include scaled dimensions
                 'num_points': args.num_points,
                 'position_range': (args.position_range_min, args.position_range_max),
                 'move_smoothest_freq': args.move_smoothest_freq
             }
+        else:
+            hp = base_hp
             
         # Choose between standard MRQ and adaptive MRQ
         if args.use_adaptive:
             agent = MRQ_Adaptive.Agent(env.obs_shape, env.action_dim, env.max_action,
-                env.pixel_obs, env.discrete, device, env.history, hp)
+                env.pixel_obs, env.discrete, device, env.history, hp, scale_factor=1.0)  # Set scale_factor to 1.0 here
         else:
             agent = MRQ.Agent(env.obs_shape, env.action_dim, env.max_action,
-                env.pixel_obs, env.discrete, device, env.history)
+                env.pixel_obs, env.discrete, device, env.history, hp, scale_factor=1.0)  # Set scale_factor to 1.0 here
 
         logger = utils.Logger(f'{args.log_folder}/{args.project_name}.txt')
 

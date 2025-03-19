@@ -86,12 +86,17 @@ class Hyperparameters:
 
 class Agent:
     def __init__(self, obs_shape: tuple, action_dim: int, max_action: float, pixel_obs: bool, discrete: bool,
-        device: torch.device, history: int=1, hp: Dict={}):
+        device: torch.device, history: int=1, hp: Dict={}, scale_factor: float=1.0):
         self.name = 'MR.Q-Adaptive'  # Changed name to indicate adaptive version
 
+        # Store scale factor as an instance variable
+        self.scale_factor = scale_factor
+        
         self.hp = Hyperparameters(**hp)
         utils.set_instance_vars(self.hp, self)
         self.device = device
+        
+        # No need to apply scale factor here as it's already applied in the hyperparameters
 
         if discrete: # Scale action noise since discrete actions are [0,1] and continuous actions are [-1,1].
             self.exploration_noise *= 0.5
@@ -104,28 +109,31 @@ class Agent:
             self.prioritized, initial_priority=self.min_priority)
 
         # Use adaptive models with num_points and position_range parameters
+        # Use scale_factor=1.0 since we've already scaled the dimensions in the hyperparameters
         self.encoder = models.Encoder(obs_shape[0] * history, action_dim, pixel_obs,
-            self.num_bins, self.zs_dim, self.za_dim, self.zsa_dim,
-            self.enc_hdim, self.enc_activ, 
-            num_points=self.num_points, position_range=self.position_range).to(self.device)
-        self.encoder_optimizer = torch.optim.AdamW(self.encoder.parameters(), lr=self.enc_lr, weight_decay=self.enc_wd)
+            self.num_bins, self.hp.zs_dim, self.hp.za_dim, self.hp.zsa_dim,
+            self.hp.enc_hdim, self.hp.enc_activ, 
+            num_points=self.num_points, position_range=self.position_range, scale_factor=1.0).to(self.device)
+        self.encoder_optimizer = torch.optim.AdamW(self.encoder.parameters(), lr=self.hp.enc_lr, weight_decay=self.hp.enc_wd)
         self.encoder_target = copy.deepcopy(self.encoder)
 
         # Use adaptive models with num_points and position_range parameters
-        self.policy = models.Policy(action_dim, discrete, self.gumbel_tau, self.zs_dim,
-            self.policy_hdim, self.policy_activ,
-            num_points=self.num_points, position_range=self.position_range).to(self.device)
-        self.policy_optimizer = torch.optim.AdamW(self.policy.parameters(), lr=self.policy_lr, weight_decay=self.policy_wd)
+        # Use scale_factor=1.0 since we've already scaled the dimensions in the hyperparameters
+        self.policy = models.Policy(action_dim, discrete, self.hp.gumbel_tau, self.hp.zs_dim,
+            self.hp.policy_hdim, self.hp.policy_activ,
+            num_points=self.num_points, position_range=self.position_range, scale_factor=1.0).to(self.device)
+        self.policy_optimizer = torch.optim.AdamW(self.policy.parameters(), lr=self.hp.policy_lr, weight_decay=self.hp.policy_wd)
         self.policy_target = copy.deepcopy(self.policy)
 
         # Use adaptive models with num_points and position_range parameters
-        self.value = models.Value(self.zsa_dim, self.value_hdim, self.value_activ,
-            num_points=self.num_points, position_range=self.position_range).to(self.device)
-        self.value_optimizer = torch.optim.AdamW(self.value.parameters(), lr=self.value_lr, weight_decay=self.value_wd)
+        # Use scale_factor=1.0 since we've already scaled the dimensions in the hyperparameters
+        self.value = models.Value(self.hp.zsa_dim, self.hp.value_hdim, self.hp.value_activ,
+            num_points=self.num_points, position_range=self.position_range, scale_factor=1.0).to(self.device)
+        self.value_optimizer = torch.optim.AdamW(self.value.parameters(), lr=self.hp.value_lr, weight_decay=self.hp.value_wd)
         self.value_target = copy.deepcopy(self.value)
 
         # Used by reward prediction
-        self.two_hot = TwoHot(self.device, self.lower, self.upper, self.num_bins)
+        self.two_hot = TwoHot(self.device, self.hp.lower, self.hp.upper, self.hp.num_bins)
         self.gammas = torch.zeros(1, self.Q_horizon, 1, device=self.device)
         discount = 1
         for t in range(self.Q_horizon):
@@ -154,7 +162,13 @@ class Agent:
             zs = self.encoder.zs(state)
             action = self.policy.act(zs)
             if use_exploration: action += torch.randn_like(action) * self.exploration_noise
-            return int(action.argmax()) if self.discrete else action.clamp(-1,1).cpu().data.numpy().flatten() * self.max_action
+            
+            if self.discrete:
+                return int(action.argmax())
+            else:
+                # Return the action directly - no need to adjust dimensions
+                # The policy should already be configured to output the correct action dimensions
+                return action.clamp(-1,1).cpu().data.numpy().flatten() * self.max_action
 
 
     def train(self):
@@ -196,9 +210,14 @@ class Agent:
     def train_encoder(self, state: torch.Tensor, action: torch.Tensor, next_state: torch.Tensor,
         reward: torch.Tensor, not_done: torch.Tensor, env_terminates: bool):
         with torch.no_grad():
-            encoder_target = self.encoder_target.zs(
-                next_state.reshape(-1,*self.state_shape) # Combine batch and horizon
-            ).reshape(state.shape[0],-1,self.zs_dim) # Separate batch and horizon
+            # Get the encoder output
+            encoder_output = self.encoder_target.zs(next_state.reshape(-1,*self.state_shape))
+            
+            # Calculate the actual size of the encoder output
+            actual_zs_dim = encoder_output.shape[1]
+            
+            # Reshape using the actual dimension, not the original zs_dim
+            encoder_target = encoder_output.reshape(state.shape[0], -1, actual_zs_dim)
 
         pred_zs = self.encoder.zs(state[:,0])
         prev_not_done = 1 # In subtrajectories with termination, mask out losses after termination.

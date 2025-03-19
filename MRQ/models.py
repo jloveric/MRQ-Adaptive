@@ -26,8 +26,16 @@ def ln_activ(x: torch.Tensor, activ: Callable):
 
 
 class BaseMLP(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hdim: int, activ: str='elu'):
+    def __init__(self, input_dim: int, output_dim: int, hdim: int, activ: str='elu', scale_factor: float=1.0):
         super().__init__()
+        # Store original dimensions
+        self.original_input_dim = input_dim
+        self.original_output_dim = output_dim
+        self.scale_factor = scale_factor
+        
+        # Only scale hidden dimensions, not input or output
+        hdim = int(hdim * scale_factor)
+        
         self.l1 = nn.Linear(input_dim, hdim)
         self.l2 = nn.Linear(hdim, hdim)
         self.l3 = nn.Linear(hdim, output_dim)
@@ -44,8 +52,12 @@ class BaseMLP(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, pixel_obs: bool,
-        num_bins: int=65, zs_dim: int=512, za_dim: int=256, zsa_dim: int=512, hdim: int=512, activ: str='elu'):
+        num_bins: int=65, zs_dim: int=512, za_dim: int=256, zsa_dim: int=512, hdim: int=512, activ: str='elu', scale_factor: float=1.0):
         super().__init__()
+        zs_dim = int(zs_dim * scale_factor)
+        za_dim = int(za_dim * scale_factor)
+        zsa_dim = int(zsa_dim * scale_factor)
+        hdim = int(hdim * scale_factor)
         if pixel_obs:
             self.zs = self.cnn_zs
             self.zs_cnn1 = nn.Conv2d(state_dim, 32, 3, stride=2)
@@ -55,10 +67,10 @@ class Encoder(nn.Module):
             self.zs_lin = nn.Linear(1568, zs_dim)
         else:
             self.zs = self.mlp_zs
-            self.zs_mlp = BaseMLP(state_dim, zs_dim, hdim, activ)
+            self.zs_mlp = BaseMLP(state_dim, zs_dim, hdim, activ, scale_factor)
 
         self.za = nn.Linear(action_dim, za_dim)
-        self.zsa = BaseMLP(zs_dim + za_dim, zsa_dim, hdim, activ)
+        self.zsa = BaseMLP(zs_dim + za_dim, zsa_dim, hdim, activ, scale_factor)
         self.model = nn.Linear(zsa_dim, num_bins + zs_dim + 1)
 
         self.zs_dim = zs_dim
@@ -92,9 +104,13 @@ class Encoder(nn.Module):
 
 
 class Policy(nn.Module):
-    def __init__(self, action_dim: int, discrete: bool, gumbel_tau: float=10, zs_dim: int=512, hdim: int=512, activ: str='relu'):
+    def __init__(self, action_dim: int, discrete: bool, gumbel_tau: float=10, zs_dim: int=512, hdim: int=512, activ: str='relu', scale_factor: float=1.0):
         super().__init__()
-        self.policy = BaseMLP(zs_dim, action_dim, hdim, activ)
+        # Scale zs_dim and hdim, but NOT action_dim
+        zs_dim_scaled = int(zs_dim * scale_factor)
+        hdim_scaled = int(hdim * scale_factor)
+        # Keep action_dim as is - don't scale it
+        self.policy = BaseMLP(zs_dim_scaled, action_dim, hdim_scaled, activ, scale_factor=1.0)
         self.activ = partial(F.gumbel_softmax, tau=gumbel_tau) if discrete else torch.tanh
         self.discrete = discrete
 
@@ -111,14 +127,17 @@ class Policy(nn.Module):
 
 
 class Value(nn.Module):
-    def __init__(self, zsa_dim: int=512, hdim: int=512, activ: str='elu'):
+    def __init__(self, zsa_dim: int=512, hdim: int=512, activ: str='elu', scale_factor: float=1.0):
         super().__init__()
 
         class ValueNetwork(nn.Module):
-            def __init__(self, input_dim: int, output_dim: int, hdim: int=512, activ: str='elu'):
+            def __init__(self, input_dim: int, output_dim: int, hdim: int=512, activ: str='elu', scale_factor: float=1.0):
                 super().__init__()
-                self.q1 = BaseMLP(input_dim, hdim, hdim, activ)
-                self.q2 = nn.Linear(hdim, output_dim)
+                self.q1 = BaseMLP(input_dim, hdim, hdim, activ, scale_factor=scale_factor)
+                # Apply scale factor to hdim for the Linear layer
+                hdim_scaled = int(hdim * scale_factor)
+                output_dim_scaled = int(output_dim * scale_factor)
+                self.q2 = nn.Linear(hdim_scaled, output_dim_scaled)
 
                 self.activ = getattr(F, activ)
                 self.apply(weight_init)
@@ -127,8 +146,8 @@ class Value(nn.Module):
                 zsa = ln_activ(self.q1(zsa), self.activ)
                 return self.q2(zsa)
 
-        self.q1 = ValueNetwork(zsa_dim, 1, hdim, activ)
-        self.q2 = ValueNetwork(zsa_dim, 1, hdim, activ)
+        self.q1 = ValueNetwork(zsa_dim, 1, hdim, activ, scale_factor=scale_factor)
+        self.q2 = ValueNetwork(zsa_dim, 1, hdim, activ, scale_factor=scale_factor)
 
 
     def forward(self, zsa: torch.Tensor):
